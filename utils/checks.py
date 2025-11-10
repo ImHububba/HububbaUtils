@@ -1,7 +1,7 @@
+# utils/checks.py
 import discord
 from discord import app_commands
 from typing import Callable
-
 import config
 
 # Custom permission failure so we can send friendly errors
@@ -9,27 +9,42 @@ class PermissionDenied(app_commands.CheckFailure):
     pass
 
 
+# --- Role helper ---
 def _has_named_role(member: discord.Member, role_name: str) -> bool:
-    """Check if a member has a role by name (case-sensitive)."""
     return discord.utils.get(member.roles, name=role_name) is not None
 
 
-def in_allowed_guilds() -> Callable:
-    """Allow only in configured guilds."""
+# --- Guild restriction check (used by older cogs) ---
+def in_home_guild() -> Callable:
+    """Restrict commands to Hububba's Coding World or Project Infinite."""
     async def predicate(interaction: discord.Interaction) -> bool:
-        if interaction.guild is None or interaction.guild_id not in config.GUILD_IDS:
-            raise PermissionDenied(
-                "This bot only functions inside **Hububba’s Coding World** and **Project Infinite ∞**."
-            )
+        if interaction.guild is None or interaction.guild_id not in [
+            config.HUBUBBA_GUILD_ID,
+            config.PROJECT_INFINITE_ID
+        ]:
+            raise PermissionDenied("This bot only functions inside **Hububba's Coding World** or **Project Infinite ∞**.")
         return True
     return app_commands.check(predicate)
 
 
+# --- Newer generic allowed guild check (kept for future use) ---
+def in_allowed_guilds() -> Callable:
+    """Restrict to allowed guilds list in config."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or interaction.guild_id not in [
+            config.HUBUBBA_GUILD_ID,
+            config.PROJECT_INFINITE_ID
+        ]:
+            raise PermissionDenied("This bot only functions inside authorized guilds.")
+        return True
+    return app_commands.check(predicate)
+
+
+# --- Permission levels ---
 def perm_level(level: str) -> Callable:
     """
-    level: 'staff' | 'admin' | 'any'
-    - 'any': no role gate but still requires being in an allowed guild.
-    - SUPER_ROLE_NAME always grants access.
+    level: 'staff' | 'admin' | 'any' (any = no role gate but still respects in_home_guild)
+    SUPER_ROLE_NAME always grants access.
     """
     valid = {"staff", "admin", "any"}
     if level not in valid:
@@ -41,29 +56,28 @@ def perm_level(level: str) -> Callable:
 
         member: discord.Member = interaction.user  # type: ignore
 
-        # 1. Must be in allowed guild
-        if interaction.guild is None or interaction.guild_id not in config.GUILD_IDS:
-            raise PermissionDenied(
-                "This bot only functions inside **Hububba’s Coding World** and **Project Infinite ∞**."
-            )
-
-        # 2. Owner or super role bypasses all checks
-        if member.guild.owner_id == member.id or _has_named_role(member, config.SUPER_ROLE_NAME):
+        # Always allow the server owner and those with the super role
+        if member.guild.owner_id == member.id:
+            return True
+        if _has_named_role(member, config.SUPER_ROLE_NAME):
             return True
 
-        # 3. Admin perms or role always pass
-        if member.guild_permissions.administrator or _has_named_role(member, config.ADMIN_ROLE_NAME):
+        # Admins also pass administrator perm
+        if member.guild_permissions.administrator:
             return True
 
-        # 4. Handle specific levels
         if level == "any":
             return True
 
+        if level == "admin":
+            if _has_named_role(member, config.ADMIN_ROLE_NAME):
+                return True
+            raise PermissionDenied("You need the **Admin+ Perms** role for this command.")
+
         if level == "staff":
-            if _has_named_role(member, config.STAFF_ROLE_NAME):
+            if _has_named_role(member, config.STAFF_ROLE_NAME) or _has_named_role(member, config.ADMIN_ROLE_NAME):
                 return True
             raise PermissionDenied("You need the **Staff Perms Role** (or higher) for this command.")
 
-        # Should never hit here
         raise PermissionDenied("Permission denied.")
     return app_commands.check(predicate)
