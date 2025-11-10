@@ -1,3 +1,4 @@
+# main.py — Hububba Utils (Patched Original)
 import asyncio
 import discord
 from discord.ext import commands
@@ -29,6 +30,7 @@ async def on_ready():
     )
     logger.info(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
+    # ===== Re-sync commands =====
     try:
         total_synced = 0
         for guild_id in ALLOWED_GUILDS:
@@ -44,17 +46,17 @@ async def on_ready():
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
-    """If invited elsewhere, politely inform and leave unless it's an allowed guild."""
+    """Politely leave unauthorized guilds."""
     if guild.id not in ALLOWED_GUILDS:
         try:
-            text_target = guild.system_channel
-            if text_target is None:
+            target = guild.system_channel
+            if target is None:
                 for ch in guild.text_channels:
                     if ch.permissions_for(guild.me).send_messages:
-                        text_target = ch
+                        target = ch
                         break
-            if text_target:
-                await text_target.send(
+            if target:
+                await target.send(
                     "👋 Hey there! I only function inside **Hububba’s Coding World** and **Project Infinite ∞**, "
                     "so I’ll be leaving now. ✌️"
                 )
@@ -91,10 +93,9 @@ async def load_extensions():
         "cogs.autoroles",
         "cogs.logging_cog",
         "cogs.twitch",
-        "cogs.tickets",  # ✅ New PayPal commissions & tickets system
+        "cogs.tickets",  # ✅ Tickets last for panel refresh
     ]
 
-    # Ensure required directories exist
     os.makedirs("data", exist_ok=True)
     os.makedirs("logs", exist_ok=True)
 
@@ -107,14 +108,16 @@ async def load_extensions():
 
 
 def read_token() -> str:
-    """Read token from token.txt (preferred)"""
+    """Read token from token.txt (and remove any trailing junk)."""
     token_path = os.path.join(os.path.dirname(__file__), "token.txt")
     if not os.path.exists(token_path):
-        raise FileNotFoundError("token.txt not found. Create it and put your bot token on a single line.")
+        raise FileNotFoundError("token.txt not found. Put your bot token on one line.")
     with open(token_path, "r", encoding="utf-8") as f:
         token = f.read().strip()
+    # Fix any trailing $ or whitespace characters
+    token = token.replace("$", "").strip()
     if not token:
-        raise ValueError("token.txt is empty.")
+        raise ValueError("token.txt is empty or invalid.")
     return token
 
 
