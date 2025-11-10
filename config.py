@@ -74,3 +74,13 @@ BOT_STATUS_TEXT = "Hububba Utilities Online"
 LOG_FILE_PATH = "logs/bot.log"
 LOG_MAX_BYTES = 2_000_000
 LOG_BACKUP_COUNT = 5
+
+# =========================
+# GLOBALS (for compatibility)
+# =========================
+GUILD_ID = HUBUBBA_GUILD_ID
+GUILD_IDS = [HUBUBBA_GUILD_ID, PROJECT_INFINITE_ID]
+
+SUPER_ROLE_NAME = "The One And Only"
+ADMIN_ROLE_NAME = "Admin+ Perms"
+STAFF_ROLE_NAME = "Staff Perms Role"
