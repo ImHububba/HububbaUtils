@@ -84,14 +84,30 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 
 async def load_extensions():
-    await bot.load_extension("cogs.moderation")
-    await bot.load_extension("cogs.utility")
-    await bot.load_extension("cogs.autoroles")
-    await bot.load_extension("cogs.logging_cog")
-    await bot.load_extension("cogs.twitch")
+    """Load all core and custom cogs."""
+    extensions = [
+        "cogs.moderation",
+        "cogs.utility",
+        "cogs.autoroles",
+        "cogs.logging_cog",
+        "cogs.twitch",
+        "cogs.tickets",  # ✅ New PayPal commissions & tickets system
+    ]
+
+    # Ensure required directories exist
+    os.makedirs("data", exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
+
+    for ext in extensions:
+        try:
+            await bot.load_extension(ext)
+            logger.info(f"✅ Loaded extension: {ext}")
+        except Exception as e:
+            logger.error(f"❌ Failed to load {ext}: {e}")
 
 
 def read_token() -> str:
+    """Read token from token.txt (preferred)"""
     token_path = os.path.join(os.path.dirname(__file__), "token.txt")
     if not os.path.exists(token_path):
         raise FileNotFoundError("token.txt not found. Create it and put your bot token on a single line.")
