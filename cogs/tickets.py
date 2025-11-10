@@ -1,184 +1,254 @@
-# cogs/tickets.py
+import json
+import os
+import aiohttp
+import datetime as dt
 import discord
 from discord.ext import commands
 from discord import app_commands
-import json, os, aiohttp
+from typing import Optional
 import config
 
-# ===============================
-# CONFIG / CONSTANTS
-# ===============================
-ORDERS_FILE = config.ORDERS_FILE
-LOG_CHANNEL_ID = config.LOG_CHANNEL_ID
-TICKET_PANEL_CHANNEL_ID = config.TICKET_PANEL_CHANNEL_ID
-ARCHIVE_CATEGORY = config.ARCHIVE_CATEGORY
 
-PAYPAL_CLIENT_ID = "YOUR_PAYPAL_CLIENT_ID_HERE"
-PAYPAL_SECRET = "YOUR_PAYPAL_SECRET_HERE"
-PAYPAL_API = "https://api-m.sandbox.paypal.com"  # switch to live when ready
+# ===== CHECKS =====
+try:
+    from utils.checks import in_home_guild as _in_home_guild
+    def in_home_guild():
+        return _in_home_guild()
+except Exception:
+    def in_home_guild():
+        async def pred(interaction: discord.Interaction):
+            return interaction.guild and interaction.guild.id in getattr(config, "ALLOWED_GUILDS", [])
+        return app_commands.check(pred)
 
 
-class Tickets(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        os.makedirs(os.path.dirname(ORDERS_FILE), exist_ok=True)
-        if not os.path.exists(ORDERS_FILE):
-            with open(ORDERS_FILE, "w") as f:
-                json.dump({}, f)
+# ====== DATA UTILS ======
+def ensure_data_files():
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    if not os.path.exists(config.ORDERS_FILE):
+        with open(config.ORDERS_FILE, "w") as f:
+            json.dump([], f)
 
-    # ===============================
-    # AUTO TICKET PANEL ON STARTUP
-    # ===============================
-    @commands.Cog.listener()
-    async def on_ready(self):
-        await self.bot.wait_until_ready()
-        panel_channel = self.bot.get_channel(TICKET_PANEL_CHANNEL_ID)
-        if not panel_channel:
-            print("⚠️ Ticket panel channel not found. Check TICKET_PANEL_CHANNEL_ID.")
+
+def append_order(entry: dict):
+    ensure_data_files()
+    with open(config.ORDERS_FILE, "r+", encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+        except Exception:
+            data = []
+        data.append(entry)
+        f.seek(0)
+        json.dump(data, f, indent=2)
+        f.truncate()
+
+
+# ===== PAYPAL =====
+async def get_paypal_token(session: aiohttp.ClientSession):
+    auth = aiohttp.BasicAuth(config.PAYPAL_CLIENT_ID, config.PAYPAL_SECRET)
+    form = {"grant_type": "client_credentials"}
+    async with session.post(config.PAYPAL_OAUTH_URL, data=form, auth=auth) as r:
+        r.raise_for_status()
+        data = await r.json()
+        return data["access_token"]
+
+
+async def create_and_send_invoice(session, token, *, email, amount, currency, description, item_name):
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body = {
+        "detail": {
+            "currency_code": currency,
+            "note": description,
+            "term": "Due on receipt",
+            "memo": "Hububba Studios Commission",
+        },
+        "invoicer": {"name": {"given_name": "Hububba", "surname": "Studios"}},
+        "primary_recipients": [{"billing_info": {"email_address": email}}],
+        "items": [{
+            "name": item_name,
+            "quantity": "1",
+            "unit_amount": {"currency_code": currency, "value": f"{amount:.2f}"}
+        }]
+    }
+
+    # Create invoice
+    async with session.post(config.PAYPAL_INVOICE_URL, headers=headers, json=body) as r:
+        r.raise_for_status()
+        inv = await r.json()
+
+    invoice_id = inv.get("id")
+    links = {l["rel"]: l["href"] for l in inv.get("links", [])}
+    pay_link = links.get("payer_view")
+
+    # Send invoice
+    async with session.post(f"{config.PAYPAL_INVOICE_URL}/{invoice_id}/send", headers=headers) as r:
+        r.raise_for_status()
+
+    return {"id": invoice_id, "payer_url": pay_link}
+
+
+# ===== PANEL SYSTEM =====
+async def ensure_panel(bot: commands.Bot):
+    await bot.wait_until_ready()
+    chan = bot.get_channel(config.TICKET_PANEL_CHANNEL_ID)
+    if not isinstance(chan, discord.TextChannel):
+        return
+
+    async for msg in chan.history(limit=25):
+        if msg.author.id == bot.user.id and msg.embeds and msg.embeds[0].title == "Open a Ticket":
             return
 
-        async for msg in panel_channel.history(limit=10):
-            if msg.author == self.bot.user and msg.embeds and "Create a Ticket" in (msg.embeds[0].title or ""):
-                print("✅ Ticket panel already exists.")
-                return
+    embed = discord.Embed(
+        title="Open a Ticket",
+        description=(
+            "Need support, want to start a commission, or have a complaint?\n"
+            "Click a button below to open a ticket. A short form will pop up."
+        ),
+        color=config.BRAND_COLOR
+    )
+    embed.set_author(name="Hububba Utilities")
 
-        embed = discord.Embed(
-            title="🎫 Create a Ticket",
-            description="Need help, have a commission request, or need support?\nClick below to open a private ticket.",
-            color=discord.Color.blue(),
-        )
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="Open Ticket", style=discord.ButtonStyle.green, custom_id="open_ticket"))
-        await panel_channel.send(embed=embed, view=view)
-        print("✅ Ticket panel sent.")
+    await chan.send(embed=embed, view=TicketPanelView())
 
-    # ===============================
-    # BUTTON INTERACTION HANDLER
-    # ===============================
-    @commands.Cog.listener()
-    async def on_interaction(self, interaction: discord.Interaction):
-        if not interaction.type == discord.InteractionType.component:
-            return
-        if interaction.data.get("custom_id") != "open_ticket":
-            return
 
+# ===== MODALS / VIEWS =====
+class TicketModal(discord.ui.Modal, title="Ticket Details"):
+    def __init__(self, ticket_type: str):
+        super().__init__(timeout=None)
+        self.ticket_type = ticket_type
+        self.subject = discord.ui.TextInput(label="Subject", max_length=100)
+        self.details = discord.ui.TextInput(label="Details", style=discord.TextStyle.long, max_length=1800)
+        self.add_item(self.subject)
+        self.add_item(self.details)
+
+    async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
-        category = discord.utils.get(guild.categories, name="Tickets")
-        if category is None:
-            category = await guild.create_category(name="Tickets")
-
-        existing = discord.utils.get(guild.text_channels, name=f"ticket-{interaction.user.name.lower()}")
-        if existing:
-            await interaction.response.send_message(
-                f"You already have an open ticket: {existing.mention}", ephemeral=True
-            )
+        if not guild:
             return
+
+        cat_name = {
+            "support": config.SUPPORT_CATEGORY_NAME,
+            "commission": config.COMMISSION_CATEGORY_NAME,
+            "complaint": config.COMPLAINT_CATEGORY_NAME
+        }.get(self.ticket_type, config.SUPPORT_CATEGORY_NAME)
+
+        category = discord.utils.get(guild.categories, name=cat_name)
+        if not category:
+            category = await guild.create_category(cat_name)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
         }
-        ticket_channel = await guild.create_text_channel(
-            name=f"ticket-{interaction.user.name}", category=category, overwrites=overwrites
+
+        ch = await guild.create_text_channel(
+            name=f"{self.ticket_type}-{interaction.user.name}".replace(" ", "-"),
+            category=category,
+            overwrites=overwrites
         )
 
-        await ticket_channel.send(
-            f"{interaction.user.mention}, thank you for reaching out! Please describe your issue or commission request below."
+        log_chan = interaction.client.get_channel(config.LOG_CHANNEL_ID)
+        if isinstance(log_chan, discord.TextChannel):
+            embed = discord.Embed(
+                title=f"New {self.ticket_type.title()} Ticket",
+                color=config.BRAND_COLOR,
+                timestamp=discord.utils.utcnow()
+            )
+            embed.add_field(name="User", value=interaction.user.mention)
+            embed.add_field(name="Subject", value=str(self.subject))
+            embed.add_field(name="Channel", value=ch.mention)
+            await log_chan.send(embed=embed)
+
+        ticket_embed = discord.Embed(
+            title=f"{self.ticket_type.title()} Ticket",
+            description=f"**Subject:** {self.subject}\n**Details:** {self.details}\n\nStaff will assist soon.",
+            color=config.BRAND_COLOR
         )
-        await interaction.response.send_message(f"✅ Ticket created: {ticket_channel.mention}", ephemeral=True)
+        await ch.send(interaction.user.mention, embed=ticket_embed)
+        await interaction.response.send_message(f"Created {ch.mention}", ephemeral=True)
 
-        log_chan = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_chan:
-            await log_chan.send(f"🎫 **Ticket Opened:** {interaction.user.mention} — {ticket_channel.mention}")
 
-    # ===============================
-    # /close TICKET COMMAND
-    # ===============================
-    @app_commands.command(name="close", description="Close the current ticket and archive it.")
+class TicketPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Support", style=discord.ButtonStyle.primary, emoji="🛠️")
+    async def support(self, i: discord.Interaction, b: discord.ui.Button):
+        await i.response.send_modal(TicketModal("support"))
+
+    @discord.ui.button(label="Commission", style=discord.ButtonStyle.primary, emoji="💼")
+    async def commission(self, i: discord.Interaction, b: discord.ui.Button):
+        await i.response.send_modal(TicketModal("commission"))
+
+    @discord.ui.button(label="Complaint", style=discord.ButtonStyle.primary, emoji="📣")
+    async def complaint(self, i: discord.Interaction, b: discord.ui.Button):
+        await i.response.send_modal(TicketModal("complaint"))
+
+
+# ===== COG =====
+class Tickets(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        ensure_data_files()
+        bot.loop.create_task(ensure_panel(bot))
+
+    @app_commands.command(name="close", description="Close and archive this ticket.")
+    @in_home_guild()
     async def close(self, interaction: discord.Interaction):
-        chan = interaction.channel
-        if not isinstance(chan, discord.TextChannel) or not chan.name.startswith("ticket-"):
-            await interaction.response.send_message("❌ This isn't a ticket channel.", ephemeral=True)
+        ch = interaction.channel
+        guild = interaction.guild
+        if not isinstance(ch, discord.TextChannel) or not guild:
+            return await interaction.response.send_message("Run this inside a ticket.", ephemeral=True)
+
+        archive_cat = discord.utils.get(guild.categories, name=config.ARCHIVE_CATEGORY_NAME)
+        if not archive_cat:
+            archive_cat = await guild.create_category(config.ARCHIVE_CATEGORY_NAME)
+
+        await ch.edit(category=archive_cat)
+        await ch.set_permissions(guild.default_role, view_channel=False)
+        await ch.send("✅ Ticket archived.")
+
+        log_chan = interaction.client.get_channel(config.LOG_CHANNEL_ID)
+        if isinstance(log_chan, discord.TextChannel):
+            embed = discord.Embed(
+                title="Ticket Archived",
+                description=f"{ch.mention} archived by {interaction.user.mention}",
+                color=config.BRAND_COLOR
+            )
+            await log_chan.send(embed=embed)
+
+    @app_commands.command(name="invoice", description="Create a PayPal invoice.")
+    @in_home_guild()
+    async def invoice(self, interaction: discord.Interaction,
+                      email: str, amount: float, currency: str = "USD",
+                      description: str = "Hububba Commission", item_name: str = "Commission"):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            async with aiohttp.ClientSession() as session:
+                token = await get_paypal_token(session)
+                inv = await create_and_send_invoice(session, token, email=email, amount=amount,
+                                                    currency=currency, description=description,
+                                                    item_name=item_name)
+        except Exception as e:
+            await interaction.followup.send(f"❌ PayPal error: `{e}`", ephemeral=True)
             return
 
-        archive_cat = discord.utils.get(interaction.guild.categories, name=ARCHIVE_CATEGORY)
-        if archive_cat is None:
-            archive_cat = await interaction.guild.create_category(ARCHIVE_CATEGORY)
+        append_order({
+            "id": inv["id"], "email": email, "amount": amount, "currency": currency,
+            "description": description, "created": dt.datetime.utcnow().isoformat()
+        })
 
-        await chan.edit(category=archive_cat, reason="Ticket closed")
-        await chan.set_permissions(interaction.guild.default_role, view_channel=False)
-        await interaction.response.send_message(f"✅ Ticket archived to {archive_cat.name}.", ephemeral=True)
+        log_chan = interaction.client.get_channel(config.LOG_CHANNEL_ID)
+        if isinstance(log_chan, discord.TextChannel):
+            embed = discord.Embed(title="Invoice Created", color=config.BRAND_COLOR)
+            embed.add_field(name="ID", value=inv["id"])
+            embed.add_field(name="Client", value=email)
+            embed.add_field(name="Amount", value=f"{currency} {amount}")
+            embed.add_field(name="Pay Link", value=inv["payer_url"], inline=False)
+            await log_chan.send(embed=embed)
 
-        log_chan = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_chan:
-            await log_chan.send(f"📦 **Ticket Closed:** {chan.name} by {interaction.user.mention}")
-
-    # ===============================
-    # /order CREATE COMMISSION ORDER
-    # ===============================
-    @app_commands.command(name="order", description="Create a commission order and generate a PayPal invoice.")
-    async def order(self, interaction: discord.Interaction, client_name: str, amount: float, description: str):
-        await interaction.response.defer(ephemeral=True)
-        order_id = f"ORD-{len(self._load_orders()) + 1:04d}"
-
-        invoice_url = await self._create_paypal_invoice(order_id, client_name, amount, description)
-        self._save_order(order_id, client_name, amount, description, invoice_url)
-
-        await interaction.followup.send(
-            f"✅ **Order Created:** `{order_id}` for **${amount:.2f}**\n📜 Description: {description}\n💰 [PayPal Invoice]({invoice_url})",
-            ephemeral=True,
-        )
-
-        log_chan = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log_chan:
-            await log_chan.send(f"💼 **Order Created:** `{order_id}` — {client_name} (${amount:.2f})")
-
-    # ===============================
-    # HELPER: LOAD/SAVE ORDERS
-    # ===============================
-    def _load_orders(self):
-        with open(ORDERS_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return {}
-
-    def _save_order(self, order_id, client, amount, desc, invoice_url):
-        data = self._load_orders()
-        data[order_id] = {
-            "client": client,
-            "amount": amount,
-            "desc": desc,
-            "invoice_url": invoice_url,
-        }
-        with open(ORDERS_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-
-    # ===============================
-    # PAYPAL INVOICE GENERATION
-    # ===============================
-    async def _create_paypal_invoice(self, order_id, client_name, amount, description):
-        """Generate invoice via PayPal REST API"""
-        async with aiohttp.ClientSession() as session:
-            # Obtain access token
-            auth = aiohttp.BasicAuth(PAYPAL_CLIENT_ID, PAYPAL_SECRET)
-            async with session.post(f"{PAYPAL_API}/v1/oauth2/token", auth=auth, data={"grant_type": "client_credentials"}) as resp:
-                data = await resp.json()
-                access_token = data.get("access_token")
-
-            headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-            invoice_payload = {
-                "detail": {"invoice_number": order_id, "currency_code": "USD", "note": "Commission Payment"},
-                "invoicer": {"name": {"given_name": "Hububba Studios"}},
-                "primary_recipients": [{"billing_info": {"name": {"given_name": client_name}}}],
-                "items": [{"name": description, "quantity": "1", "unit_amount": {"currency_code": "USD", "value": f"{amount:.2f}"}}],
-            }
-            async with session.post(f"{PAYPAL_API}/v2/invoicing/invoices", headers=headers, json=invoice_payload) as resp:
-                invoice_data = await resp.json()
-                return invoice_data.get("href", "https://paypal.com/invoice/notfound")
+        await interaction.followup.send(f"✅ Invoice `{inv['id']}` created.\nPay link: {inv['payer_url']}", ephemeral=True)
 
 
-async def setup(bot: commands.Bot):
+async def setup(bot):
     await bot.add_cog(Tickets(bot))
-    print("✅ Loaded Tickets Cog")
