@@ -1,139 +1,97 @@
 import discord
-from discord.ext import commands
-import json
-import os
+from discord.ext import commands, tasks
 import config
 import asyncio
+import logging
 
-ORDERS_FILE = config.ORDERS_FILE
+logger = logging.getLogger("bot")
 
+# =====================
+# Persistent Ticket View
+# =====================
 
-class TicketCategoryView(discord.ui.View):
-    def __init__(self, bot):
-        super().__init__(timeout=None)
-        self.bot = bot
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)  # persistent view — survives restarts
 
-    @discord.ui.button(label="💬 Support", style=discord.ButtonStyle.primary, custom_id="support")
-    async def support_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_ticket(interaction, "Support Tickets", "Support")
-
-    @discord.ui.button(label="🧾 Commission", style=discord.ButtonStyle.success, custom_id="commission")
-    async def commission_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_ticket(interaction, "Commission Tickets", "Commission")
-
-    @discord.ui.button(label="⚠️ Complaint", style=discord.ButtonStyle.danger, custom_id="complaint")
-    async def complaint_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_ticket(interaction, "Complaint Tickets", "Complaint")
-
-    async def create_ticket(self, interaction: discord.Interaction, category_name: str, ticket_type: str):
+    @discord.ui.button(label="🎫 Create Ticket", style=discord.ButtonStyle.blurple, custom_id="ticket:create")
+    async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
-        category = discord.utils.get(guild.categories, name=category_name)
-        if not category:
-            category = await guild.create_category(category_name)
+        user = interaction.user
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
 
-        existing = discord.utils.get(guild.text_channels, name=f"{interaction.user.name.lower()}-{ticket_type.lower()}")
+        category = discord.utils.get(guild.categories, name="Tickets")
+        if not category:
+            category = await guild.create_category("Tickets")
+
+        existing = discord.utils.get(category.text_channels, name=f"ticket-{user.name.lower().replace(' ', '-')}")
         if existing:
-            await interaction.response.send_message(f"You already have an open {ticket_type} ticket: {existing.mention}", ephemeral=True)
+            await interaction.response.send_message(f"❗ You already have a ticket open: {existing.mention}", ephemeral=True)
             return
 
-        channel = await guild.create_text_channel(
-            f"{interaction.user.name}-{ticket_type}",
-            category=category,
-            topic=f"{ticket_type} ticket for {interaction.user.display_name}",
-            permission_synced=False
-        )
-        await channel.set_permissions(interaction.user, view_channel=True, send_messages=True)
-        await channel.set_permissions(guild.default_role, view_channel=False)
+        channel = await category.create_text_channel(name=f"ticket-{user.name}", overwrites=overwrites)
+        await channel.send(f"{user.mention} — thanks for opening a ticket! A staff member will be with you shortly.")
+        await interaction.response.send_message(f"✅ Ticket created: {channel.mention}", ephemeral=True)
+        logger.info(f"🎟️ Created ticket for {user} in {guild.name}")
 
-        embed = discord.Embed(
-            title=f"{ticket_type} Ticket",
-            description=f"{interaction.user.mention} please answer the following questions to help us assist you.",
-            color=config.BRAND_COLOR
-        )
-        await channel.send(embed=embed)
+    @discord.ui.button(label="🔒 Close Ticket", style=discord.ButtonStyle.red, custom_id="ticket:close")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        if not channel.name.startswith("ticket-"):
+            await interaction.response.send_message("⚠️ You can only close this inside a ticket channel.", ephemeral=True)
+            return
+        await interaction.response.send_message("🕒 Closing ticket in 5 seconds...", ephemeral=True)
+        await asyncio.sleep(5)
+        await channel.delete()
+        logger.info(f"🗑️ Closed ticket channel {channel.name}")
 
-        if ticket_type == "Commission":
-            await self.create_order(channel, interaction.user)
 
-        await interaction.response.send_message(f"✅ {ticket_type} ticket created: {channel.mention}", ephemeral=True)
-
-    async def create_order(self, channel: discord.TextChannel, user: discord.User):
-        if not os.path.exists(ORDERS_FILE):
-            with open(ORDERS_FILE, "w") as f:
-                json.dump([], f)
-
-        with open(ORDERS_FILE, "r") as f:
-            orders = json.load(f)
-
-        order_id = len(orders) + 1
-        new_order = {
-            "id": order_id,
-            "client": str(user.id),
-            "status": "Open",
-            "notes": "",
-            "ticket_channel": channel.id
-        }
-        orders.append(new_order)
-
-        with open(ORDERS_FILE, "w") as f:
-            json.dump(orders, f, indent=4)
-
-        embed = discord.Embed(
-            title=f"Commission Ticket",
-            description=(
-                f"Opened by {user.mention}\n\n"
-                f"**Order** #{order_id}\n"
-                f"Use `/close` to archive when done."
-            ),
-            color=config.BRAND_COLOR
-        )
-        await channel.send(embed=embed)
-
+# =====================
+# Cog Setup
+# =====================
 
 class Tickets(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._ensure_panel_task.start()
 
-    @commands.Cog.listener()
-    async def on_ready(self):
+    def cog_unload(self):
+        self._ensure_panel_task.cancel()
+
+    @tasks.loop(count=1)
+    async def _ensure_panel_task(self):
         await self.bot.wait_until_ready()
-        if hasattr(self.bot, "_panel_sent"):
-            return
-        await asyncio.sleep(3)
+        await self._ensure_panel()
+
+    async def _ensure_panel(self):
         channel = self.bot.get_channel(config.TICKET_PANEL_CHANNEL_ID)
         if not channel:
-            print("⚠️ Ticket panel channel not found.")
+            logger.error("❌ Ticket panel channel not found.")
             return
 
-        try:
-            await channel.purge(limit=50)
-            embed = discord.Embed(
-                title="🎫 Project Infinite Ticket Panel",
-                description="Select a category below to open a ticket:\n"
-                            "💬 Support • 🧾 Commission • ⚠️ Complaint",
-                color=config.BRAND_COLOR
-            )
-            view = TicketCategoryView(self.bot)
-            await channel.send(embed=embed, view=view)
-            self.bot._panel_sent = True
-            print("✅ Ticket panel sent.")
-        except Exception as e:
-            print(f"⚠️ Failed to send ticket panel: {e}")
+        # delete any old bot messages
+        async for msg in channel.history(limit=100):
+            if msg.author == self.bot.user:
+                await msg.delete()
 
-    @commands.hybrid_command(name="close", description="Close the current ticket")
-    async def close(self, ctx: commands.Context):
-        channel = ctx.channel
-        if not any(x in channel.name for x in ["support", "commission", "complaint"]):
-            await ctx.send("❌ This is not a ticket channel.", delete_after=5)
-            return
+        embed = discord.Embed(
+            title="🎟️ Support Tickets",
+            description="Need help? Click below to open a ticket.",
+            color=discord.Color.blue(),
+        )
+        view = TicketView()
+        await channel.send(embed=embed, view=view)
+        logger.info("✅ Ticket panel sent.")
 
-        archive_category = discord.utils.get(ctx.guild.categories, name=config.ARCHIVE_CATEGORY_NAME)
-        if not archive_category:
-            archive_category = await ctx.guild.create_category(config.ARCHIVE_CATEGORY_NAME)
-
-        await channel.edit(category=archive_category, reason="Ticket closed")
-        await ctx.send("✅ Ticket closed and archived.")
-
+    @_ensure_panel_task.before_loop
+    async def before_panel(self):
+        await self.bot.wait_until_ready()
 
 async def setup(bot):
+    bot.add_view(TicketView())  # <— makes the buttons persistent across restarts
     await bot.add_cog(Tickets(bot))
+    logger.info("✅ Loaded Tickets Cog")
