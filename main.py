@@ -1,5 +1,5 @@
 # ======================================================
-# Hububba Utils - Main Bot File
+# Hububba Utils — Main Entrypoint (Full Fixed Version)
 # ======================================================
 
 import asyncio
@@ -7,23 +7,26 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import os
-
 import config
 from utils.logger import setup_logger
 
-# ===== ALLOWED GUILDS =====
+# ===== BOT CONFIG =====
 ALLOWED_GUILDS = [config.HUBUBBA_GUILD_ID, config.PROJECT_INFINITE_ID]
 
 # ===== INTENTS =====
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
-intents.message_content = True  # Needed for logging edits/deletions
+intents.message_content = True
 
-# ===== BOT =====
+# ===== BOT INSTANCE =====
 bot = commands.Bot(command_prefix="!", intents=intents)
 logger = setup_logger(config.LOG_FILE_PATH, config.LOG_MAX_BYTES, config.LOG_BACKUP_COUNT)
 
+
+# ======================================================
+#  EVENTS
+# ======================================================
 
 @bot.event
 async def on_ready():
@@ -33,12 +36,11 @@ async def on_ready():
     )
     logger.info(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
-    # ===== Re-sync commands =====
+    # Load and sync all slash commands
     try:
         total_synced = 0
         for guild_id in ALLOWED_GUILDS:
             guild = discord.Object(id=guild_id)
-            bot.tree.copy_global_to(guild=guild)
             synced = await bot.tree.sync(guild=guild)
             total_synced += len(synced)
             logger.info(f"🌿 Synced {len(synced)} commands to guild {guild_id}.")
@@ -60,8 +62,8 @@ async def on_guild_join(guild: discord.Guild):
                         break
             if target:
                 await target.send(
-                    "👋 Hey there! I only function inside **Hububba’s Coding World** and **Project Infinite ∞**, "
-                    "so I’ll be leaving now. ✌️"
+                    "👋 Hey there! I only function inside **Hububba’s Coding World** "
+                    "and **Project Infinite ∞**, so I’ll be leaving now. ✌️"
                 )
         finally:
             await guild.leave()
@@ -88,15 +90,20 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.followup.send(msg, ephemeral=True)
 
 
+# ======================================================
+#  COG LOADER
+# ======================================================
+
 async def load_extensions():
-    """Load all core and custom cogs."""
+    """Load all cogs including tickets & orders."""
     extensions = [
         "cogs.moderation",
         "cogs.utility",
         "cogs.autoroles",
         "cogs.logging_cog",
         "cogs.twitch",
-        "cogs.tickets",  # ✅ Tickets last for panel refresh
+        "cogs.tickets",  # ✅ Tickets system
+        "cogs.orders",   # ✅ Order + Invoice system
     ]
 
     os.makedirs("data", exist_ok=True)
@@ -110,19 +117,25 @@ async def load_extensions():
             logger.error(f"❌ Failed to load {ext}: {e}")
 
 
+# ======================================================
+#  TOKEN LOADING
+# ======================================================
+
 def read_token() -> str:
-    """Read token from token.txt (and remove any trailing junk)."""
+    """Read token from token.txt and sanitize it."""
     token_path = os.path.join(os.path.dirname(__file__), "token.txt")
     if not os.path.exists(token_path):
-        raise FileNotFoundError("token.txt not found. Put your bot token on one line.")
+        raise FileNotFoundError("token.txt not found. Create it and put your bot token on a single line.")
     with open(token_path, "r", encoding="utf-8") as f:
-        token = f.read().strip()
-    # Fix any trailing $ or whitespace characters
-    token = token.replace("$", "").strip()
+        token = f.read().strip().replace("$", "").strip()
     if not token:
         raise ValueError("token.txt is empty or invalid.")
     return token
 
+
+# ======================================================
+#  MAIN ENTRY
+# ======================================================
 
 async def main():
     await load_extensions()
