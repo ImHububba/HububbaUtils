@@ -1,7 +1,4 @@
-# ======================================================
-# Hububba Utils — Main Entrypoint (Full Fixed Version)
-# ======================================================
-
+# main.py — Hububba Utils (Full Repair Version)
 import asyncio
 import discord
 from discord.ext import commands
@@ -10,7 +7,7 @@ import os
 import config
 from utils.logger import setup_logger
 
-# ===== BOT CONFIG =====
+# ===== ALLOWED GUILDS =====
 ALLOWED_GUILDS = [config.HUBUBBA_GUILD_ID, config.PROJECT_INFINITE_ID]
 
 # ===== INTENTS =====
@@ -19,14 +16,10 @@ intents.guilds = True
 intents.members = True
 intents.message_content = True
 
-# ===== BOT INSTANCE =====
+# ===== BOT =====
 bot = commands.Bot(command_prefix="!", intents=intents)
 logger = setup_logger(config.LOG_FILE_PATH, config.LOG_MAX_BYTES, config.LOG_BACKUP_COUNT)
 
-
-# ======================================================
-#  EVENTS
-# ======================================================
 
 @bot.event
 async def on_ready():
@@ -36,8 +29,8 @@ async def on_ready():
     )
     logger.info(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
-    # Load and sync all slash commands
     try:
+        # Sync commands for all allowed guilds
         total_synced = 0
         for guild_id in ALLOWED_GUILDS:
             guild = discord.Object(id=guild_id)
@@ -51,19 +44,19 @@ async def on_ready():
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
-    """Politely leave unauthorized guilds."""
+    """Leave unauthorized guilds."""
     if guild.id not in ALLOWED_GUILDS:
         try:
             target = guild.system_channel
-            if target is None:
+            if not target:
                 for ch in guild.text_channels:
                     if ch.permissions_for(guild.me).send_messages:
                         target = ch
                         break
             if target:
                 await target.send(
-                    "👋 Hey there! I only function inside **Hububba’s Coding World** "
-                    "and **Project Infinite ∞**, so I’ll be leaving now. ✌️"
+                    "👋 Hey! I only run inside **Hububba’s Coding World** and **Project Infinite ∞**, "
+                    "so I’ll be leaving now. ✌️"
                 )
         finally:
             await guild.leave()
@@ -74,14 +67,12 @@ async def on_guild_join(guild: discord.Guild):
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     from utils.checks import PermissionDenied
-
-    if isinstance(error, PermissionDenied) or isinstance(error, app_commands.CheckFailure):
+    if isinstance(error, (PermissionDenied, app_commands.CheckFailure)):
         try:
             await interaction.response.send_message(str(error), ephemeral=True)
         except discord.InteractionResponded:
             await interaction.followup.send(str(error), ephemeral=True)
         return
-
     logger.exception("Slash command error", exc_info=error)
     msg = "Something went wrong running that command."
     try:
@@ -90,20 +81,16 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.followup.send(msg, ephemeral=True)
 
 
-# ======================================================
-#  COG LOADER
-# ======================================================
-
 async def load_extensions():
-    """Load all cogs including tickets & orders."""
+    """Load all cogs and ensure their commands register."""
     extensions = [
         "cogs.moderation",
         "cogs.utility",
         "cogs.autoroles",
         "cogs.logging_cog",
         "cogs.twitch",
-        "cogs.tickets",  # ✅ Tickets system
-        "cogs.orders",   # ✅ Order + Invoice system
+        "cogs.tickets",
+        "cogs.orders",
     ]
 
     os.makedirs("data", exist_ok=True)
@@ -116,26 +103,27 @@ async def load_extensions():
         except Exception as e:
             logger.error(f"❌ Failed to load {ext}: {e}")
 
+    # Force add all cog app_commands to bot.tree manually
+    for cog_name, cog in bot.cogs.items():
+        if hasattr(cog, "get_app_commands"):
+            cmds = cog.get_app_commands()
+            for cmd in cmds:
+                for guild_id in ALLOWED_GUILDS:
+                    bot.tree.add_command(cmd, guild=discord.Object(id=guild_id))
+            logger.info(f"✅ Registered {len(cmds)} commands from {cog_name}")
 
-# ======================================================
-#  TOKEN LOADING
-# ======================================================
 
-def read_token() -> str:
-    """Read token from token.txt and sanitize it."""
+def read_token():
+    """Read and clean token."""
     token_path = os.path.join(os.path.dirname(__file__), "token.txt")
     if not os.path.exists(token_path):
-        raise FileNotFoundError("token.txt not found. Create it and put your bot token on a single line.")
+        raise FileNotFoundError("token.txt not found")
     with open(token_path, "r", encoding="utf-8") as f:
-        token = f.read().strip().replace("$", "").strip()
+        token = f.read().strip().replace("$", "")
     if not token:
-        raise ValueError("token.txt is empty or invalid.")
+        raise ValueError("token.txt empty or invalid")
     return token
 
-
-# ======================================================
-#  MAIN ENTRY
-# ======================================================
 
 async def main():
     await load_extensions()
