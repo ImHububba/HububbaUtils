@@ -1,4 +1,4 @@
-# main.py — Hububba Utils (Patched Original)
+# main.py — Hububba Utils (Fixed Cog Sync Order)
 import asyncio
 import discord
 from discord.ext import commands
@@ -22,6 +22,28 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 logger = setup_logger(config.LOG_FILE_PATH, config.LOG_MAX_BYTES, config.LOG_BACKUP_COUNT)
 
 
+async def load_extensions():
+    """Load all core and custom cogs."""
+    extensions = [
+        "cogs.moderation",
+        "cogs.utility",
+        "cogs.autoroles",
+        "cogs.logging_cog",
+        "cogs.twitch",
+        "cogs.tickets",  # ✅ Tickets last for panel refresh
+    ]
+
+    os.makedirs("data", exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
+
+    for ext in extensions:
+        try:
+            await bot.load_extension(ext)
+            logger.info(f"✅ Loaded extension: {ext}")
+        except Exception as e:
+            logger.error(f"❌ Failed to load {ext}: {e}")
+
+
 @bot.event
 async def on_ready():
     await bot.change_presence(
@@ -35,11 +57,10 @@ async def on_ready():
         total_synced = 0
         for guild_id in ALLOWED_GUILDS:
             guild = discord.Object(id=guild_id)
-            bot.tree.copy_global_to(guild=guild)
             synced = await bot.tree.sync(guild=guild)
             total_synced += len(synced)
             logger.info(f"🌿 Synced {len(synced)} commands to guild {guild_id}.")
-        logger.info(f"✅ Finished syncing to {len(ALLOWED_GUILDS)} guilds ({total_synced} total commands).")
+        logger.info(f"✅ Finished syncing {total_synced} total commands across {len(ALLOWED_GUILDS)} guilds.")
     except Exception as e:
         logger.exception(f"❌ Failed to sync commands: {e}")
 
@@ -85,28 +106,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.followup.send(msg, ephemeral=True)
 
 
-async def load_extensions():
-    """Load all core and custom cogs."""
-    extensions = [
-        "cogs.moderation",
-        "cogs.utility",
-        "cogs.autoroles",
-        "cogs.logging_cog",
-        "cogs.twitch",
-        "cogs.tickets",  # ✅ Tickets last for panel refresh
-    ]
-
-    os.makedirs("data", exist_ok=True)
-    os.makedirs("logs", exist_ok=True)
-
-    for ext in extensions:
-        try:
-            await bot.load_extension(ext)
-            logger.info(f"✅ Loaded extension: {ext}")
-        except Exception as e:
-            logger.error(f"❌ Failed to load {ext}: {e}")
-
-
 def read_token() -> str:
     """Read token from token.txt (and remove any trailing junk)."""
     token_path = os.path.join(os.path.dirname(__file__), "token.txt")
@@ -114,7 +113,6 @@ def read_token() -> str:
         raise FileNotFoundError("token.txt not found. Put your bot token on one line.")
     with open(token_path, "r", encoding="utf-8") as f:
         token = f.read().strip()
-    # Fix any trailing $ or whitespace characters
     token = token.replace("$", "").strip()
     if not token:
         raise ValueError("token.txt is empty or invalid.")
@@ -122,9 +120,10 @@ def read_token() -> str:
 
 
 async def main():
-    await load_extensions()
     token = read_token()
-    await bot.start(token)
+    async with bot:
+        await load_extensions()
+        await bot.start(token)
 
 
 if __name__ == "__main__":
