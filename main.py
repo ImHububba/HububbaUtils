@@ -23,14 +23,12 @@ logger = setup_logger(config.LOG_FILE_PATH, config.LOG_MAX_BYTES, config.LOG_BAC
 
 @bot.event
 async def on_ready():
-    # Bot presence
     await bot.change_presence(
         activity=discord.Game(name=config.BOT_STATUS_TEXT),
         status=discord.Status.online
     )
     logger.info(f"✅ Logged in as {bot.user} ({bot.user.id})")
 
-    # Sync slash commands to both servers
     try:
         total_synced = 0
         for guild_id in ALLOWED_GUILDS:
@@ -46,14 +44,11 @@ async def on_ready():
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
-    """
-    If invited elsewhere, politely inform and leave unless it's an allowed guild.
-    """
+    """If invited elsewhere, politely inform and leave unless it's an allowed guild."""
     if guild.id not in ALLOWED_GUILDS:
         try:
             text_target = guild.system_channel
             if text_target is None:
-                # Pick the first channel we can message in
                 for ch in guild.text_channels:
                     if ch.permissions_for(guild.me).send_messages:
                         text_target = ch
@@ -69,7 +64,6 @@ async def on_guild_join(guild: discord.Guild):
         logger.info(f"✅ Joined authorized guild: {guild.name} ({guild.id})")
 
 
-# ===== FRIENDLY ERROR HANDLING =====
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     from utils.checks import PermissionDenied
@@ -81,7 +75,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.followup.send(str(error), ephemeral=True)
         return
 
-    # Log other errors
     logger.exception("Slash command error", exc_info=error)
     msg = "Something went wrong running that command."
     try:
@@ -90,7 +83,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.followup.send(msg, ephemeral=True)
 
 
-# ===== LOAD EXTENSIONS =====
 async def load_extensions():
     await bot.load_extension("cogs.moderation")
     await bot.load_extension("cogs.utility")
@@ -99,7 +91,6 @@ async def load_extensions():
     await bot.load_extension("cogs.twitch")
 
 
-# ===== TOKEN HANDLING =====
 def read_token() -> str:
     token_path = os.path.join(os.path.dirname(__file__), "token.txt")
     if not os.path.exists(token_path):
@@ -111,7 +102,6 @@ def read_token() -> str:
     return token
 
 
-# ===== MAIN ENTRYPOINT =====
 async def main():
     await load_extensions()
     token = read_token()
