@@ -4,7 +4,7 @@ from discord.ext import commands
 from discord import app_commands
 
 import config
-from utils.checks import in_home_guild, perm_level
+from utils.checks import in_allowed_guilds, perm_level
 
 class Utility(commands.Cog):
     def __init__(self, bot: commands.Bot):
