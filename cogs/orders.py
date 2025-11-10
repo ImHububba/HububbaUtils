@@ -1,265 +1,158 @@
+# cogs/orders.py
+import json
+import os
+from dataclasses import dataclass, asdict
+from typing import List, Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
-import json, os
-from datetime import datetime
 
-ORDERS_FILE = "data/orders.json"
+DATA_DIR = "data"
+ORDERS_PATH = os.path.join(DATA_DIR, "orders.json")
 
-# === Utility ===
-def load_orders():
-    if not os.path.exists(ORDERS_FILE):
-        os.makedirs(os.path.dirname(ORDERS_FILE), exist_ok=True)
-        with open(ORDERS_FILE, "w") as f:
-            json.dump({}, f)
-    with open(ORDERS_FILE, "r") as f:
-        return json.load(f)
+def _ensure_store():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if not os.path.exists(ORDERS_PATH):
+        with open(ORDERS_PATH, "w", encoding="utf-8") as f:
+            json.dump([], f)
 
-def save_orders(data):
-    with open(ORDERS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+def _safe_load() -> List[dict]:
+    _ensure_store()
+    try:
+        with open(ORDERS_PATH, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+            if not raw:
+                return []
+            return json.loads(raw)
+    except Exception:
+        return []
 
-def generate_order_id():
-    orders = load_orders()
-    if not orders:
-        return "0001"
-    next_id = len(orders) + 1
-    return f"{next_id:04d}"
+def _safe_save(items: List[dict]):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = ORDERS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(items, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, ORDERS_PATH)
 
-# === Order Cog ===
-class Orders(commands.Cog):
-    def __init__(self, bot):
+def _next_order_id(items: List[dict]) -> int:
+    if not items:
+        return 1
+    return max(int(x.get("id", 0)) for x in items) + 1
+
+@dataclass
+class Order:
+    id: int
+    user_id: int
+    ticket_channel_id: Optional[int]
+    title: str
+    status: str  # e.g. "open", "in_progress", "completed", "cancelled"
+    budget: Optional[str] = None
+    deadline: Optional[str] = None
+    notes: Optional[str] = None
+
+    def to_dict(self):
+        return asdict(self)
+
+def create_order_from_ticket(
+    user_id: int,
+    ticket_channel_id: int,
+    title: str,
+    budget: Optional[str],
+    deadline: Optional[str],
+    notes: Optional[str],
+) -> Order:
+    items = _safe_load()
+    oid = _next_order_id(items)
+    order = Order(
+        id=oid,
+        user_id=user_id,
+        ticket_channel_id=ticket_channel_id,
+        title=title or f"Commission #{oid}",
+        status="open",
+        budget=budget,
+        deadline=deadline,
+        notes=notes,
+    )
+    items.append(order.to_dict())
+    _safe_save(items)
+    return order
+
+def list_orders() -> List[Order]:
+    return [Order(**o) for o in _safe_load()]
+
+def get_order(oid: int) -> Optional[Order]:
+    for o in _safe_load():
+        if int(o.get("id", 0)) == oid:
+            return Order(**o)
+    return None
+
+def save_order(order: Order):
+    items = _safe_load()
+    for i, o in enumerate(items):
+        if int(o.get("id", 0)) == order.id:
+            items[i] = order.to_dict()
+            break
+    else:
+        items.append(order.to_dict())
+    _safe_save(items)
+
+class OrdersCog(commands.Cog, name="Orders"):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # ===================================================
-    # /order create
-    # ===================================================
-    @app_commands.command(name="order_create", description="Create a new order manually")
-    async def order_create(self, interaction: discord.Interaction,
-                           client: discord.User,
-                           title: str,
-                           budget: str,
-                           deadline: str,
-                           notes: str):
-        orders = load_orders()
-        order_id = generate_order_id()
-
-        orders[order_id] = {
-            "client": client.id,
-            "title": title,
-            "budget": budget,
-            "deadline": deadline,
-            "notes": notes,
-            "status": "Open",
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "created_by": interaction.user.id
-        }
-
-        save_orders(orders)
-
-        embed = discord.Embed(
-            title=f"🧾 New Order Created — #{order_id}",
-            color=discord.Color.purple()
-        )
-        embed.add_field(name="Client", value=client.mention, inline=True)
-        embed.add_field(name="Budget", value=budget, inline=True)
-        embed.add_field(name="Deadline", value=deadline, inline=True)
-        embed.add_field(name="Notes", value=notes, inline=False)
-        embed.set_footer(text=f"Created by {interaction.user}")
-
-        await interaction.response.send_message(embed=embed)
-        await client.send(f"✅ Your order **#{order_id}** has been created!")
-
-    # ===================================================
-    # /order update
-    # ===================================================
-    @app_commands.command(name="order_update", description="Update order status")
-    async def order_update(self, interaction: discord.Interaction, order_id: str, status: str):
-        orders = load_orders()
-        if order_id not in orders:
-            await interaction.response.send_message(f"❌ Order {order_id} not found.", ephemeral=True)
+    # /order list
+    @app_commands.command(name="order_list", description="List all orders.")
+    @app_commands.guild_only()
+    async def order_list(self, interaction: discord.Interaction):
+        items = list_orders()
+        if not items:
+            await interaction.response.send_message("No orders yet.", ephemeral=True)
             return
+        chunks = []
+        for o in items:
+            line = f"**#{o.id}** — **{discord.utils.escape_markdown(o.title)}** · {o.status}"
+            if o.ticket_channel_id:
+                line += f" · <#{o.ticket_channel_id}>"
+            chunks.append(line)
+        msg = "\n".join(chunks)
+        await interaction.response.send_message(msg, ephemeral=True)
 
-        orders[order_id]["status"] = status
-        save_orders(orders)
-        await interaction.response.send_message(f"✅ Order {order_id} status updated to **{status}**.", ephemeral=True)
-
-    # ===================================================
-    # /order notes
-    # ===================================================
-    @app_commands.command(name="order_notes", description="View notes of an order")
-    async def order_notes(self, interaction: discord.Interaction, order_id: str):
-        orders = load_orders()
-        if order_id not in orders:
-            await interaction.response.send_message(f"❌ Order {order_id} not found.", ephemeral=True)
-            return
-
-        notes = orders[order_id].get("notes", "No notes found.")
-        embed = discord.Embed(
-            title=f"📝 Notes for Order #{order_id}",
-            description=notes,
-            color=discord.Color.purple()
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # ===================================================
     # /order manage
-    # ===================================================
-    @app_commands.command(name="order_manage", description="Staff management panel for an order")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def order_manage(self, interaction: discord.Interaction, order_id: str):
-        orders = load_orders()
-        if order_id not in orders:
-            await interaction.response.send_message(f"❌ Order {order_id} not found.", ephemeral=True)
-            return
-
-        order = orders[order_id]
-        embed = discord.Embed(
-            title=f"⚙️ Manage Order #{order_id}",
-            color=discord.Color.purple()
-        )
-        embed.add_field(name="Client", value=f"<@{order['client']}>", inline=True)
-        embed.add_field(name="Budget", value=order['budget'], inline=True)
-        embed.add_field(name="Deadline", value=order['deadline'], inline=True)
-        embed.add_field(name="Status", value=order['status'], inline=True)
-        embed.add_field(name="Notes", value=order['notes'][:500], inline=False)
-        embed.set_footer(text=f"Created by <@{order['created_by']}> • {order['created_at']}")
-
-        view = ManageOrderView(order_id)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-# ===================================================
-# INTERACTIVE PANEL
-# ===================================================
-class ManageOrderView(discord.ui.View):
-    def __init__(self, order_id):
-        super().__init__(timeout=None)
-        self.order_id = order_id
-
-    # --- Status Dropdown ---
-    @discord.ui.select(
-        placeholder="Change order status...",
-        options=[
-            discord.SelectOption(label="Open", emoji="🟢"),
-            discord.SelectOption(label="In Progress", emoji="🟡"),
-            discord.SelectOption(label="Completed", emoji="✅"),
-            discord.SelectOption(label="Cancelled", emoji="❌")
-        ]
+    @app_commands.command(name="order_manage", description="Edit an existing order.")
+    @app_commands.describe(
+        id="Order ID number",
+        title="New title",
+        status="open / in_progress / completed / cancelled",
+        budget="Update budget",
+        deadline="Update deadline",
+        notes="Update notes"
     )
-    async def status_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        orders = load_orders()
-        if self.order_id not in orders:
-            await interaction.response.send_message("Order not found.", ephemeral=True)
+    @app_commands.guild_only()
+    async def order_manage(
+        self,
+        interaction: discord.Interaction,
+        id: int,
+        title: Optional[str] = None,
+        status: Optional[str] = None,
+        budget: Optional[str] = None,
+        deadline: Optional[str] = None,
+        notes: Optional[str] = None,
+    ):
+        o = get_order(id)
+        if not o:
+            await interaction.response.send_message(f"Order #{id} not found.", ephemeral=True)
             return
-        new_status = select.values[0]
-        orders[self.order_id]["status"] = new_status
-        save_orders(orders)
-        await interaction.response.send_message(f"✅ Status updated to **{new_status}** for #{self.order_id}", ephemeral=True)
+        if title is not None: o.title = title
+        if status is not None: o.status = status
+        if budget is not None: o.budget = budget
+        if deadline is not None: o.deadline = deadline
+        if notes is not None: o.notes = notes
+        save_order(o)
+        await interaction.response.send_message(f"Updated order **#{o.id}**.", ephemeral=True)
 
-    # --- Edit Notes Button ---
-    @discord.ui.button(label="Edit Notes", style=discord.ButtonStyle.blurple, emoji="📝")
-    async def edit_notes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = EditNotesModal(self.order_id)
-        await interaction.response.send_modal(modal)
-
-    # --- Edit Budget/Deadline Button ---
-    @discord.ui.button(label="Edit Budget/Deadline", style=discord.ButtonStyle.gray, emoji="💰")
-    async def edit_budget(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = EditBudgetModal(self.order_id)
-        await interaction.response.send_modal(modal)
-
-    # --- View Full Order ---
-    @discord.ui.button(label="View Full Info", style=discord.ButtonStyle.green, emoji="📄")
-    async def view_info(self, interaction: discord.Interaction, button: discord.ui.Button):
-        orders = load_orders()
-        order = orders.get(self.order_id)
-        embed = discord.Embed(
-            title=f"📋 Full Order #{self.order_id}",
-            color=discord.Color.purple()
-        )
-        for k, v in order.items():
-            embed.add_field(name=k.capitalize(), value=str(v), inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # --- Create Invoice ---
-    @discord.ui.button(label="Create Invoice", style=discord.ButtonStyle.red, emoji="🧾")
-    async def create_invoice(self, interaction: discord.Interaction, button: discord.ui.Button):
-        orders = load_orders()
-        order = orders.get(self.order_id)
-        if not order:
-            await interaction.response.send_message("❌ Order not found.", ephemeral=True)
-            return
-
-        embed = discord.Embed(
-            title=f"🧾 Invoice for Order #{self.order_id}",
-            color=discord.Color.purple()
-        )
-        embed.add_field(name="Client", value=f"<@{order['client']}>", inline=True)
-        embed.add_field(name="Budget", value=order['budget'], inline=True)
-        embed.add_field(name="Deadline", value=order['deadline'], inline=True)
-        embed.add_field(name="Status", value=order['status'], inline=True)
-        embed.add_field(name="Notes", value=order['notes'], inline=False)
-        embed.set_footer(text=f"Generated by {interaction.user}")
-
-        await interaction.response.send_message(embed=embed)
-
-# ===================================================
-# MODALS
-# ===================================================
-class EditNotesModal(discord.ui.Modal, title="Edit Order Notes"):
-    def __init__(self, order_id):
-        super().__init__()
-        self.order_id = order_id
-        self.notes_input = discord.ui.TextInput(
-            label="New Notes",
-            style=discord.TextStyle.paragraph,
-            placeholder="Enter updated notes here...",
-            required=True
-        )
-        self.add_item(self.notes_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        orders = load_orders()
-        if self.order_id not in orders:
-            await interaction.response.send_message("Order not found.", ephemeral=True)
-            return
-
-        orders[self.order_id]["notes"] = self.notes_input.value
-        save_orders(orders)
-        await interaction.response.send_message(f"✅ Notes updated for Order #{self.order_id}", ephemeral=True)
-
-class EditBudgetModal(discord.ui.Modal, title="Edit Budget / Deadline"):
-    def __init__(self, order_id):
-        super().__init__()
-        self.order_id = order_id
-        self.budget_input = discord.ui.TextInput(
-            label="New Budget",
-            style=discord.TextStyle.short,
-            placeholder="Enter new budget",
-            required=False
-        )
-        self.deadline_input = discord.ui.TextInput(
-            label="New Deadline",
-            style=discord.TextStyle.short,
-            placeholder="Enter new deadline",
-            required=False
-        )
-        self.add_item(self.budget_input)
-        self.add_item(self.deadline_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        orders = load_orders()
-        if self.order_id not in orders:
-            await interaction.response.send_message("Order not found.", ephemeral=True)
-            return
-
-        if self.budget_input.value:
-            orders[self.order_id]["budget"] = self.budget_input.value
-        if self.deadline_input.value:
-            orders[self.order_id]["deadline"] = self.deadline_input.value
-        save_orders(orders)
-        await interaction.response.send_message(f"✅ Budget/Deadline updated for Order #{self.order_id}", ephemeral=True)
-
-# ===================================================
-async def setup(bot):
-    await bot.add_cog(Orders(bot))
+async def setup(bot: commands.Bot):
+    cog = OrdersCog(bot)
+    await bot.add_cog(cog)
+    # optional debug logging
+    if hasattr(bot, "logger"):
+        bot.logger.info("✅ Registered 4 commands from Orders")
