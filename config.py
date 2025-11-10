@@ -1,86 +1,41 @@
-# config.py
-# Fill in IDs and settings. All IDs are integers.
+# ======================================================
+# Hububba Utils - Configuration
+# ======================================================
 
-# =========================
-# HUBUBBA'S CODING WORLD
-# =========================
-HUBUBBA_GUILD_ID = 1416292142959165545  # Hububba's Coding World (home guild)
+# ===== BOT / GUILDS =====
+HUBUBBA_GUILD_ID = 1416292142959165545
+PROJECT_INFINITE_ID = 1433773040734437460
 
-HUBUBBA_LOGS = {
-    "WELCOME": 1416308689203367946,   # Welcome messages
-    "GENERAL": 1416295990075592775,   # Message edits/deletions, bans, kicks, locks, etc.
-    "BOT": 1416296007196610600        # Bot startup, command usage, errors
-}
+BOT_STATUS_TEXT = "Hububba Utilities ∞"
 
-# Roles
-HUBUBBA_ROLES = {
-    "STAFF": "Staff Perms Role",       # Kick, Purge, Timeout, Untimeout
-    "ADMIN": "Admin+ Perms",           # Kick, Purge, Lock, Unlock, Ban, Ping
-    "SUPER": "The One And Only",       # All perms (always allowed)
-    "AUTO": "Member",                  # Auto-assigned on join
-    "STREAM_NOTIS": "Stream Notis"     # Role to ping on go-live
-}
+# ===== LOGGING =====
+LOG_FILE_PATH = "/home/HububbaUtils/logs/bot.log"
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
 
-# =========================
-# PROJECT INFINITE
-# =========================
-PROJECT_INFINITE_ID = 1433773040734437460  # Project Infinite ∞
+# ===== BRANDING / COLORS =====
+BRAND_COLOR = 0x9B59B6
 
-INFINITE_LOGS = {
-    "WELCOME": 1435592716590256240,   # Welcome messages
-    "GENERAL": 1435592829526212638,   # Server logs
-    "BOT": 1435592888611377212        # Bot logs
-}
+# ===== CHANNELS =====
+TICKET_PANEL_CHANNEL_ID = 1430723770401685684
+LOG_CHANNEL_ID          = 1430727570365874346
 
-# Roles (by ID)
-INFINITE_ROLES = {
-    "STAFF": 1433773953528234097,     # Mod role
-    "ADMIN": 1433774200749031434,     # Admin+ role
-    "AUTO": 1433773858607071405       # Default role on join
-}
+# ===== CATEGORIES =====
+SUPPORT_CATEGORY_NAME    = "Support Tickets"
+COMMISSION_CATEGORY_NAME = "Commission Tickets"
+COMPLAINT_CATEGORY_NAME  = "Complaint Tickets"
+ARCHIVE_CATEGORY_NAME    = "Ticket Archive"
 
-# Unified log + role maps
-LOG_CHANNELS = {
-    HUBUBBA_GUILD_ID: HUBUBBA_LOGS,
-    PROJECT_INFINITE_ID: INFINITE_LOGS,
-}
+# ===== FILE PATHS =====
+DATA_DIR    = "/home/HububbaUtils/data"
+ORDERS_FILE = f"{DATA_DIR}/orders.json"
 
-ROLE_MAP = {
-    HUBUBBA_GUILD_ID: HUBUBBA_ROLES,
-    PROJECT_INFINITE_ID: INFINITE_ROLES,
-}
+# ===== PAYPAL API (LIVE) =====
+PAYPAL_CLIENT_ID = "AS0qFdttt_myK3fnb-LYNg-Zc_CBE1M8L8qG1z9MSamWqisNlCyHoST7yaNzal0CSqM9Mns-UBrc0qFw"
+PAYPAL_SECRET    = "ECOFuVgXVUSqCtEOPiGe8gPyMEXtg6w_Mr5V3OS-WivGvia2qVQJbBxs1dgEarRT0RcTGcP8BKfkw3T0"
 
-# =========================
-# GUILD SYNC + ACCESS
-# =========================
+PAYPAL_OAUTH_URL   = "https://api-m.paypal.com/v1/oauth2/token"
+PAYPAL_INVOICE_URL = "https://api-m.paypal.com/v2/invoicing/invoices"
+
+# ===== ALLOWED GUILDS =====
 ALLOWED_GUILDS = [HUBUBBA_GUILD_ID, PROJECT_INFINITE_ID]
-
-# =========================
-# Twitch (optional)
-# =========================
-TWITCH_CLIENT_ID = "jk88zsgw5gzjqkq0o8hkvh35xi28b9"
-TWITCH_CLIENT_SECRET = "qri0o0b14cmmlppqte0b1i0a9qn5if"
-TWITCH_USERNAME = "imhububba"
-TWITCH_POLL_SECONDS = 60
-
-# =========================
-# Bot presence
-# =========================
-BOT_STATUS_TEXT = "Hububba Utilities Online"
-
-# =========================
-# Logging config
-# =========================
-LOG_FILE_PATH = "logs/bot.log"
-LOG_MAX_BYTES = 2_000_000
-LOG_BACKUP_COUNT = 5
-
-# =========================
-# GLOBALS (for compatibility)
-# =========================
-GUILD_ID = HUBUBBA_GUILD_ID
-GUILD_IDS = [HUBUBBA_GUILD_ID, PROJECT_INFINITE_ID]
-
-SUPER_ROLE_NAME = "The One And Only"
-ADMIN_ROLE_NAME = "Admin+ Perms"
-STAFF_ROLE_NAME = "Staff Perms Role"
